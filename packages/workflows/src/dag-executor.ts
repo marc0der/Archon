@@ -2049,6 +2049,36 @@ async function executeLoopNode(
   const loop = node.loop;
   const msgContext = { workflowId: workflowRun.id, nodeName: node.id };
 
+  // Emit node_started up-front so every loop-node terminal event
+  // (node_failed from a pre-iteration command-load failure, node_failed from
+  // an iteration error, or node_completed at the end) is paired with a
+  // corresponding _started event — same pattern the bash and script node
+  // executors follow. Without this the new loop.command fail-fast path emits
+  // node_failed with no prior node_started.
+  getLog().info({ nodeId: node.id, type: 'loop' }, 'dag_node_started');
+  await logNodeStart(logDir, workflowRun.id, node.id, '<loop>');
+
+  deps.store
+    .createWorkflowEvent({
+      workflow_run_id: workflowRun.id,
+      event_type: 'node_started',
+      step_name: node.id,
+      data: { type: 'loop', command: loop.command ?? null },
+    })
+    .catch((err: Error) => {
+      getLog().error(
+        { err, workflowRunId: workflowRun.id, eventType: 'node_started' },
+        'workflow_event_persist_failed'
+      );
+    });
+
+  getWorkflowEventEmitter().emit({
+    type: 'node_started',
+    runId: workflowRun.id,
+    nodeId: node.id,
+    nodeName: node.id,
+  });
+
   // Resolve the iteration prompt source. `loop.prompt` is used directly;
   // `loop.command` is read once here from a command file and the loaded text
   // is reused for every iteration — editing the file mid-run cannot change the
