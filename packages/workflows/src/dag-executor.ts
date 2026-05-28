@@ -2071,7 +2071,9 @@ async function executeLoopNode(
           workflow_run_id: workflowRun.id,
           event_type: 'node_failed',
           step_name: node.id,
-          data: { error: errMsg },
+          // Mirror the structured log context: callers reading the event stream
+          // need the failing command name too, not just the resolution error.
+          data: { error: errMsg, command: loop.command },
         })
         .catch((err: Error) => {
           getLog().error(
