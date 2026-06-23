@@ -203,7 +203,11 @@ function validateDagStructure(nodes: DagNode[]): string | null {
     if ('prompt' in node && typeof node.prompt === 'string') {
       sources.push(stripMarkdownCode(node.prompt));
     }
-    if (isLoopNode(node)) {
+    if (isLoopNode(node) && typeof node.loop.prompt === 'string') {
+      // Only inline `loop.prompt` is scanned for `$nodeId.output` refs. A
+      // command-backed loop (`loop.command`) loads its prompt text from a file
+      // at runtime; that file's contents are the author's responsibility, the
+      // same way a `command:` node's body is not scanned at parse time.
       sources.push(stripMarkdownCode(node.loop.prompt));
     }
     for (const source of sources) {

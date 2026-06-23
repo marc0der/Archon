@@ -2043,10 +2043,90 @@ async function executeLoopNode(
   docsDir: string,
   nodeOutputs: Map<string, NodeOutput>,
   config: WorkflowConfig,
-  issueContext?: string
+  issueContext?: string,
+  configuredCommandFolder?: string
 ): Promise<NodeExecutionResult> {
   const loop = node.loop;
   const msgContext = { workflowId: workflowRun.id, nodeName: node.id };
+
+  // Emit node_started up-front so every loop-node terminal event
+  // (node_failed from a pre-iteration command-load failure, node_failed from
+  // an iteration error, or node_completed at the end) is paired with a
+  // corresponding _started event — same pattern the bash and script node
+  // executors follow. Without this the new loop.command fail-fast path emits
+  // node_failed with no prior node_started.
+  getLog().info({ nodeId: node.id, type: 'loop' }, 'dag_node_started');
+  await logNodeStart(logDir, workflowRun.id, node.id, '<loop>');
+
+  deps.store
+    .createWorkflowEvent({
+      workflow_run_id: workflowRun.id,
+      event_type: 'node_started',
+      step_name: node.id,
+      data: { type: 'loop', command: loop.command ?? null },
+    })
+    .catch((err: Error) => {
+      getLog().error(
+        { err, workflowRunId: workflowRun.id, eventType: 'node_started' },
+        'workflow_event_persist_failed'
+      );
+    });
+
+  getWorkflowEventEmitter().emit({
+    type: 'node_started',
+    runId: workflowRun.id,
+    nodeId: node.id,
+    nodeName: node.id,
+  });
+
+  // Resolve the iteration prompt source. `loop.prompt` is used directly;
+  // `loop.command` is read once here from a command file and the loaded text
+  // is reused for every iteration — editing the file mid-run cannot change the
+  // remaining iterations of this run. The schema guarantees exactly one of the
+  // two is defined.
+  let loopPromptTemplate: string;
+  if (typeof loop.prompt === 'string') {
+    loopPromptTemplate = loop.prompt;
+  } else if (typeof loop.command === 'string') {
+    const promptResult = await loadCommandPrompt(deps, cwd, loop.command, configuredCommandFolder);
+    if (!promptResult.success) {
+      const errMsg = promptResult.message;
+      getLog().error(
+        { nodeId: node.id, command: loop.command, error: errMsg },
+        'loop_node.command_load_failed'
+      );
+      await logNodeError(logDir, workflowRun.id, node.id, errMsg);
+      deps.store
+        .createWorkflowEvent({
+          workflow_run_id: workflowRun.id,
+          event_type: 'node_failed',
+          step_name: node.id,
+          // Mirror the structured log context: callers reading the event stream
+          // need the failing command name too, not just the resolution error.
+          data: { error: errMsg, command: loop.command },
+        })
+        .catch((err: Error) => {
+          getLog().error(
+            { err, workflowRunId: workflowRun.id, eventType: 'node_failed' },
+            'workflow_event_persist_failed'
+          );
+        });
+      getWorkflowEventEmitter().emit({
+        type: 'node_failed',
+        runId: workflowRun.id,
+        nodeId: node.id,
+        nodeName: node.id,
+        error: errMsg,
+      });
+      return { state: 'failed', output: '', error: errMsg };
+    }
+    loopPromptTemplate = promptResult.content;
+  } else {
+    // Unreachable: superRefine on loopNodeConfigSchema enforces exactly-one.
+    throw new Error(
+      `Loop node '${node.id}' has neither 'loop.prompt' nor 'loop.command' — schema invariant violated`
+    );
+  }
 
   // Resolve AI client — fail fast with descriptive error
   let aiClient: ReturnType<typeof deps.getAgentProvider>;
@@ -2151,7 +2231,7 @@ async function executeLoopNode(
       // executor starts a fresh `lastIterationOutput` variable, so the first iteration of
       // the resume also receives an empty $LOOP_PREV_OUTPUT.
       const { prompt: substitutedPrompt } = substituteWorkflowVariables(
-        loop.prompt,
+        loopPromptTemplate,
         workflowRun.id,
         workflowRun.user_message,
         artifactsDir,
@@ -3194,7 +3274,8 @@ export async function executeDagWorkflow(
               docsDir,
               nodeOutputs,
               config,
-              issueContext
+              issueContext,
+              configuredCommandFolder
             );
             return { nodeId: node.id, output };
           }

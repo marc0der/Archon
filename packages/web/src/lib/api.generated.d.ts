@@ -3125,7 +3125,8 @@ export interface components {
       prompt?: string;
       bash?: string;
       loop?: {
-        prompt: string;
+        prompt?: string;
+        command?: string;
         until: string;
         max_iterations: number;
         /** @default false */

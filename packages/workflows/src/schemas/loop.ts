@@ -2,11 +2,20 @@
  * Zod schema for loop node configuration.
  */
 import { z } from '@hono/zod-openapi';
+import { isValidCommandName } from '../command-validation';
 
 export const loopNodeConfigSchema = z
   .object({
-    /** Inline prompt text executed each iteration. */
-    prompt: z.string().min(1, "loop node requires 'loop.prompt' (non-empty string)"),
+    /** Inline prompt text executed each iteration. Mutually exclusive with `command`. */
+    prompt: z.string().min(1, "'loop.prompt' must be a non-empty string").optional(),
+    /**
+     * Named command file (under `.archon/commands/`) whose body is loaded as the iteration
+     * prompt. Resolved with repo → home → bundled precedence, identical to `command:` nodes.
+     * Mutually exclusive with `prompt`. Surrounding whitespace is trimmed so the stored value
+     * matches what downstream resolution sees — otherwise a value like `" my-cmd "` could pass
+     * parse-time validation and fail at runtime with a confusing "not found" error.
+     */
+    command: z.string().trim().min(1, "'loop.command' must be a non-empty string").optional(),
     /** Completion signal string detected in AI output (e.g., "COMPLETE"). */
     until: z.string().min(1, "loop node requires 'loop.until' (completion signal string)"),
     /** Maximum iterations allowed; exceeding this fails the node. */
@@ -21,6 +30,32 @@ export const loopNodeConfigSchema = z
     gate_message: z.string().optional(),
   })
   .superRefine((data, ctx) => {
+    const hasPrompt = typeof data.prompt === 'string' && data.prompt.length > 0;
+    const hasCommand = typeof data.command === 'string' && data.command.length > 0;
+
+    if (hasPrompt && hasCommand) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "loop node accepts exactly one of 'loop.prompt' or 'loop.command' (both were provided)",
+        path: ['command'],
+      });
+    } else if (!hasPrompt && !hasCommand) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "loop node requires either 'loop.prompt' (inline) or 'loop.command' (file)",
+        path: ['prompt'],
+      });
+    }
+
+    if (hasCommand && !isValidCommandName(data.command ?? '')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `invalid command name "${data.command ?? ''}" — must not contain path separators, '..', or start with '.'`,
+        path: ['command'],
+      });
+    }
+
     if (data.interactive === true && !data.gate_message) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
