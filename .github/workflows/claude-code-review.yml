@@ -1,0 +1,64 @@
+name: Claude Code Review
+
+# Automated PR review by Claude on every open/update. Uses a Claude subscription
+# via CLAUDE_CODE_OAUTH_TOKEN (generate with `claude setup-token`, then store as a
+# repo secret). Requires the Claude GitHub App installed on this repo.
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+          # Visual progress tracking comment with checkboxes.
+          track_progress: true
+
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request. Archon is a Bun + TypeScript monorepo with
+            strict conventions in CLAUDE.md — read it and hold the diff to it.
+
+            Focus, in priority order:
+
+            1. **Correctness & bugs**
+               - Logic errors, unhandled edge cases, race conditions
+               - Broken control flow, off-by-one, incorrect async handling
+
+            2. **CLAUDE.md compliance**
+               - Type safety: no unjustified `any`, complete type annotations
+               - Zod conventions: `z` from `@hono/zod-openapi`, `z.infer` types,
+                 explicit key type in `z.record`, routes via `registerOpenApiRoute`
+               - Fail-fast: no silently swallowed errors or broadened permissions
+               - KISS / YAGNI / DRY (rule of three) — flag speculative abstraction
+               - Package boundaries (e.g. `@archon/web` must not import
+                 `@archon/workflows`; import-type patterns)
+
+            3. **Security** — input validation, no leaked tokens/secrets, auth checks
+
+            4. **Testing** — adequate coverage for new behavior; mock-isolation rules
+               (no cross-file `mock.module()` pollution)
+
+            Use inline comments for specific issues; a top-level comment for general
+            observations. Only high-confidence findings — keep noise low. If the diff
+            is clean, say so briefly.
+
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
