@@ -386,8 +386,10 @@ export const SCRIPT_NODE_AI_FIELDS: readonly string[] = BASH_NODE_AI_FIELDS;
 
 /**
  * AI-specific fields that are unsupported on loop nodes.
- * `model` and `provider` are excluded because the DAG executor resolves and
- * forwards them to each iteration's AI call (see dag-executor.ts:2602-2648).
+ * `model` and `provider` are excluded because the DAG executor resolves them
+ * from `node.model`/`node.provider` and forwards them to each iteration's AI
+ * call. The dagNodeSchema transform preserves those two fields on loop nodes
+ * (all other AI-only fields are dropped) so they survive to the executor.
  */
 export const LOOP_NODE_AI_FIELDS: readonly string[] = BASH_NODE_AI_FIELDS.filter(
   f => f !== 'model' && f !== 'provider'
@@ -640,9 +642,18 @@ export const dagNodeSchema = dagNodeBaseSchema
     if (data.cancel !== undefined && data.cancel.trim().length > 0) {
       return { ...base, ...shared, cancel: data.cancel.trim() } as CancelNode;
     }
-    // loop — guaranteed by superRefine to be defined at this point
+    // loop — guaranteed by superRefine to be defined at this point.
+    // Carry `model` and `provider` (the two AI fields loop nodes support): the
+    // DAG executor resolves them from `node.model`/`node.provider` and forwards
+    // them to each iteration's AI call. All other AI-only fields are dropped
+    // (see LOOP_NODE_AI_FIELDS) — the loop executor does not honor them.
     if (!data.loop) throw new Error('unreachable: loop must be defined after superRefine');
-    return { ...base, loop: data.loop } as LoopNode;
+    return {
+      ...base,
+      ...(data.model !== undefined ? { model: data.model } : {}),
+      ...(data.provider !== undefined ? { provider: data.provider } : {}),
+      loop: data.loop,
+    } as LoopNode;
   })
   .openapi('DagNode');
 

@@ -3,6 +3,7 @@ import {
   isBashNode,
   isCancelNode,
   isScriptNode,
+  isLoopNode,
   isTriggerRule,
   TRIGGER_RULES,
   SCRIPT_NODE_AI_FIELDS,
@@ -693,5 +694,57 @@ describe('LOOP_NODE_AI_FIELDS', () => {
     for (const field of expectedFields) {
       expect(LOOP_NODE_AI_FIELDS).toContain(field);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dagNodeSchema — LoopNode model/provider forwarding
+//
+// Regression coverage: the transform's loop branch previously returned only
+// { ...base, loop } and dropped node-level `model`/`provider`, so a loop node's
+// per-node model override was silently stripped at parse time and the executor
+// always fell back to the workflow-level model. LOOP_NODE_AI_FIELDS excludes
+// these two fields precisely because the loop executor DOES forward them, so the
+// transform must preserve them.
+// ---------------------------------------------------------------------------
+
+describe('dagNodeSchema — LoopNode model/provider', () => {
+  const loopNode = {
+    id: 'build',
+    model: 'sonnet',
+    provider: 'claude',
+    loop: { command: 'ralph-build', until: 'PLAN_COMPLETE', max_iterations: 100 },
+  };
+
+  test('preserves node-level model on a loop node', () => {
+    const result = dagNodeSchema.safeParse(loopNode);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.model).toBe('sonnet');
+  });
+
+  test('preserves node-level provider on a loop node', () => {
+    const result = dagNodeSchema.safeParse(loopNode);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.provider).toBe('claude');
+  });
+
+  test('parsed loop node is still recognized by isLoopNode', () => {
+    const result = dagNodeSchema.safeParse(loopNode);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(isLoopNode(result.data)).toBe(true);
+  });
+
+  test('omits model/provider when not set (no undefined keys leak in)', () => {
+    const result = dagNodeSchema.safeParse({
+      id: 'build',
+      loop: { command: 'ralph-build', until: 'PLAN_COMPLETE', max_iterations: 100 },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect('model' in result.data).toBe(false);
+    expect('provider' in result.data).toBe(false);
   });
 });
